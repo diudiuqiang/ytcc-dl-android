@@ -93,75 +93,104 @@ def save_cfg(d):
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
+def _wrap(widget, pad="8dp"):
+    """把 Label 的 text_size 绑定到自身宽度，长中文自动换行而不是被左右裁掉。"""
+    def _set(inst, width):
+        inst.text_size = (max(width - 8, 1), inst.height or None)
+    widget.bind(width=_set)
+    return widget
+
+
 class Root(BoxLayout):
     def __init__(self, **kw):
-        super().__init__(orientation="vertical", padding="8dp", spacing="6dp", **kw)
+        super().__init__(orientation="vertical", padding="10dp", spacing="7dp", **kw)
         cfg = load_cfg()
 
-        title = Label(
-            text=f"[b]ytcc-dl 手机版 v{VERSION}[/b]\n国内四站 · CookieCloud 拉 cookie · 局域网",
-            size_hint_y=None, height="54dp", markup=True)
+        # 标题：两行分开、左对齐并绑定宽度，避免超宽被裁
+        title = _wrap(Label(
+            text=f"[b]ytcc-dl 手机版 v{VERSION}[/b]", markup=True,
+            font_size="18sp", halign="left", valign="middle",
+            size_hint_y=None, height="24dp"))
         self.add_widget(title)
+        sub = _wrap(Label(
+            text="国内四站 · CookieCloud 拉 cookie · 局域网",
+            font_size="12sp", halign="left", valign="middle",
+            color=(0.6, 0.6, 0.6, 1), size_hint_y=None, height="18dp"))
+        self.add_widget(sub)
 
-        # --- CookieCloud 配置（可折叠感：放在一个 Grid 里） ---
-        form = GridLayout(cols=2, spacing="5dp", size_hint_y=None,
-                          row_default_height="40dp", row_force_default=True)
+        # --- CookieCloud 配置 ---
+        # 标签固定列宽 76dp + 文字精简，杜绝「CookieCloud 地址」被切成「ookieCloud 地」
+        form = GridLayout(cols=2, spacing="6dp", size_hint_y=None,
+                          row_default_height="42dp", row_force_default=True)
         form.bind(minimum_height=form.setter("height"))
-
-        form.add_widget(Label(text="CookieCloud 地址", size_hint_x=0.32))
         _ti = {"font_name": "CJK"} if Label.font_name == "CJK" else {}
+
+        def _label(text):
+            return Label(text=text, font_size="14sp", halign="left", valign="middle",
+                         size_hint_x=None, width="76dp")
+
+        form.add_widget(_label("地址"))
         self.host = TextInput(text=cfg.get("host", "http://192.168.31.116:10888"),
-                              hint_text="http://192.168.31.116:10888", multiline=False, **_ti)
+                              hint_text="http://192.168.31.116:10888", multiline=False,
+                              font_size="14sp", **_ti)
         form.add_widget(self.host)
 
-        form.add_widget(Label(text="UUID", size_hint_x=0.32))
+        form.add_widget(_label("UUID"))
         self.uuid = TextInput(text=cfg.get("uuid", ""), hint_text="CookieCloud UUID",
-                              multiline=False, **_ti)
+                              multiline=False, font_size="14sp", **_ti)
         form.add_widget(self.uuid)
 
-        form.add_widget(Label(text="密码", size_hint_x=0.32))
+        form.add_widget(_label("密码"))
         self.password = TextInput(text=cfg.get("password", ""), hint_text="CookieCloud 密码",
-                                  multiline=False, password=True, **_ti)
+                                  multiline=False, password=True, font_size="14sp", **_ti)
         form.add_widget(self.password)
 
-        form.add_widget(Label(text="平台", size_hint_x=0.32))
+        form.add_widget(_label("平台"))
         self.platform = Spinner(
             text=cfg.get("platform", "抖音 (Douyin)"),
-            values=list(core.PLATFORMS.keys()))
+            values=list(core.PLATFORMS.keys()), font_size="14sp")
         form.add_widget(self.platform)
 
-        form.add_widget(Label(text="画质", size_hint_x=0.32))
+        form.add_widget(_label("画质"))
         self.quality = Spinner(
             text=cfg.get("quality", "最佳(单流)"),
-            values=list(core.QUALITY_PRESETS.keys()))
+            values=list(core.QUALITY_PRESETS.keys()), font_size="14sp")
         form.add_widget(self.quality)
 
-        form.add_widget(Label(text="视频链接", size_hint_x=0.32))
+        form.add_widget(_label("链接"))
         self.url = TextInput(hint_text="粘贴 v.douyin.com / b23.tv / t.cn 短链均可",
-                             multiline=False, **_ti)
+                             multiline=False, font_size="14sp", **_ti)
         form.add_widget(self.url)
         self.add_widget(form)
 
-        # 开关 + 按钮
-        bar = BoxLayout(size_hint_y=None, height="46dp", spacing="6dp")
-        self.use_cookie = CheckBox(active=True)
-        bar.add_widget(self.use_cookie)
-        bar.add_widget(Label(text="拉取并使用 cookie", size_hint_x=0.55))
-        btn_pull = Button(text="只测试拉取", size_hint_x=0.42)
-        btn_pull.bind(on_press=lambda _: self.start_pull_only())
-        bar.add_widget(btn_pull)
-        self.btn_dl = Button(text="⬇ 开始下载", size_hint_x=0.5)
-        self.btn_dl.bind(on_press=lambda _: self.start_download())
-        bar.add_widget(self.btn_dl)
-        self.add_widget(bar)
+        # 开关单独一行：CheckBox 固定宽，文字左对齐换行（不再和按钮挤一行）
+        opt = BoxLayout(size_hint_y=None, height="28dp", spacing="8dp")
+        self.use_cookie = CheckBox(active=True, size_hint_x=None, width="34dp")
+        opt.add_widget(self.use_cookie)
+        opt.add_widget(_wrap(Label(
+            text="拉取并使用 cookie（抖音可免 cookie）", font_size="13sp",
+            halign="left", valign="middle", size_hint_x=1)))
+        self.add_widget(opt)
 
-        hint = Label(
-            text=f"保存到：{APP_DIR}\n提示：抖音已内置签名补丁，通常可不勾 cookie 直接下。",
-            size_hint_y=None, height="42dp", font_size="12sp", color=(0.6, 0.6, 0.6, 1))
+        # 两个按钮单独一行，各占一半，size_hint_x 合计=1（原来 1.47 导致重叠）
+        btns = BoxLayout(size_hint_y=None, height="46dp", spacing="10dp")
+        btn_pull = Button(text="只测试拉取", font_size="14sp", size_hint_x=0.5)
+        btn_pull.bind(on_press=lambda _: self.start_pull_only())
+        btns.add_widget(btn_pull)
+        self.btn_dl = Button(text="开始下载", font_size="14sp", size_hint_x=0.5)
+        self.btn_dl.bind(on_press=lambda _: self.start_download())
+        btns.add_widget(self.btn_dl)
+        self.add_widget(btns)
+
+        # 提示行：路径缩短 + 换行（完整路径写进日志，避免横向溢出）
+        hint = _wrap(Label(
+            text="保存到 Download/ytcc-dl · 抖音已内置签名补丁，可不勾 cookie 直接下。",
+            font_size="11sp", halign="left", valign="top",
+            color=(0.6, 0.6, 0.6, 1), size_hint_y=None, height="30dp"))
         self.add_widget(hint)
 
         # 日志
-        self.log_view = TextInput(readonly=True, multiline=True, font_size="12sp",
+        self.log_view = TextInput(readonly=True, multiline=True, font_size="13sp",
                                   font_name="CJK" if Label.font_name == "CJK" else "Roboto",
                                   background_color=(0.08, 0.08, 0.1, 1),
                                   foreground_color=(0.85, 0.9, 0.85, 1))
@@ -170,7 +199,8 @@ class Root(BoxLayout):
         self.add_widget(scroll)
 
         self._log(f"ytcc-dl v{VERSION} 就绪（{'Android' if IS_ANDROID else '桌面预览'}）")
-        self._log("首次使用请填 CookieCloud 的 UUID 和密码，点「只测试拉取」验证。")
+        self._log(f"保存目录：{APP_DIR}")
+        self._log("首次使用请填 UUID 和密码，点「只测试拉取」验证。")
 
     # --- 日志线程安全 ---
     def _log(self, msg):
@@ -194,7 +224,7 @@ class Root(BoxLayout):
     def _busy(self, on):
         def _do(_):
             self.btn_dl.disabled = on
-            self.btn_dl.text = "下载中…" if on else "⬇ 开始下载"
+            self.btn_dl.text = "下载中…" if on else "开始下载"
         Clock.schedule_once(_do, 0)
 
     # --- 拉取测试 ---
