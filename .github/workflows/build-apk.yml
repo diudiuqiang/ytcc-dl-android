@@ -8,26 +8,38 @@ on:
 
 jobs:
   build-android:
-    name: Build APK with Buildozer
+    name: Build APK with official buildozer image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
+      # 不用 ArtemSBulgakov/buildozer-action@v1：它的 Dockerfile 写死了
+      # add-apt-repository ppa:openjdk-r/ppa，该 PPA 无 Ubuntu resolute(24.10)
+      # 的 Release 文件 -> apt update 404 -> 构建还没开始就失败。
+      # 直接用 kivy 官方镜像（自带 JDK/buildozer），绕开这个坏 PPA。
+      - name: Cache buildozer SDK/NDK
+        uses: actions/cache@v4
         with:
-          workdir: .
-          buildozer_version: stable
-          command: python3 pre_buildozer.py; buildozer android debug
+          path: .buildozer-cache
+          key: buildozer-sdk-ndk-${{ runner.os }}-v1
+
+      - name: Patch manifest for cleartext HTTP
+        run: python3 pre_buildozer.py
+
+      - name: Build APK
+        run: |
+          mkdir -p .buildozer-cache
+          docker run --rm \
+            -v "$PWD":/home/user/hostcwd \
+            -v "$PWD/.buildozer-cache":/home/user/.buildozer \
+            -w /home/user/hostcwd \
+            kivy/buildozer:latest android debug
+          ls -lh bin/*.apk
 
       - name: Rename APK with version
         run: |
-          APK="${{ steps.buildozer.outputs.filename }}"
-          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-            APK=$(find bin -name "*.apk" | head -1)
-          fi
+          APK=$(find bin -name "*.apk" | head -1)
           echo "built: $APK"
           cp "$APK" "bin/ytcc-dl-android-v1.0.0.apk"
           ls -lh bin/*.apk
