@@ -10,6 +10,10 @@ jobs:
   build-android:
     name: Build APK with official buildozer image
     runs-on: ubuntu-latest
+    # GITHUB_TOKEN 默认对 releases 只读；显式给写权限，否则最后一步
+    # gh release create/upload 会 403 Resource not accessible by integration。
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
