@@ -101,6 +101,65 @@ def _wrap(widget, pad="8dp"):
     return widget
 
 
+# 私用：地址写死，省得每次手填；换 NAS 时改这一行重新编译即可。
+COOKIECLOUD_HOST = "http://192.168.31.116:10888"
+
+
+class MaskedPassword(BoxLayout):
+    """密码展示/编辑控件：默认星号遮挡只露后两位，点一下切明文编辑，回车/失焦切回。
+
+    明文只存在内存与本地 config.json（自动拉 cookie 必需）；遮挡只作用于界面。
+    """
+    def __init__(self, value="", **kw):
+        super().__init__(orientation="horizontal", **kw)
+        self._value = value or ""
+        self._editing = False
+        self.display = Button(
+            text=self._masked(), font_size="14sp", halign="left", valign="middle")
+        self.display.bind(
+            width=lambda i, w: setattr(i, "text_size", (max(w - 16, 1), i.height)))
+        self.display.bind(on_press=lambda _: self._begin_edit())
+        self.add_widget(self.display)
+        self.editor = TextInput(text=self._value, multiline=False, font_size="14sp")
+        self.editor.bind(on_text_validate=lambda _: self._end_edit())
+        self.editor.bind(focus=self._on_focus)
+
+    @property
+    def text(self):
+        return self._value
+
+    def _masked(self):
+        v = self._value
+        if not v:
+            return "点击设置密码"
+        if len(v) <= 2:
+            return "*" * len(v)
+        return "*" * (len(v) - 2) + v[-2:]
+
+    def _begin_edit(self):
+        if self._editing:
+            return
+        self._editing = True
+        self.editor.text = self._value
+        self.remove_widget(self.display)
+        self.add_widget(self.editor)
+        self.editor.focus = True
+
+    def _on_focus(self, instance, has_focus):
+        if self._editing and not has_focus:
+            # 失焦当下正移除 widget，延迟一帧切回，避免事件重入
+            Clock.schedule_once(lambda _: self._end_edit(), 0)
+
+    def _end_edit(self):
+        if not self._editing:
+            return
+        self._value = self.editor.text.strip()
+        self._editing = False
+        self.remove_widget(self.editor)
+        self.display.text = self._masked()
+        self.add_widget(self.display)
+
+
 class Root(BoxLayout):
     def __init__(self, **kw):
         super().__init__(orientation="vertical", padding="10dp", spacing="7dp", **kw)
@@ -130,10 +189,10 @@ class Root(BoxLayout):
                          size_hint_x=None, width="76dp")
 
         form.add_widget(_label("地址"))
-        self.host = TextInput(text=cfg.get("host", "http://192.168.31.116:10888"),
-                              hint_text="http://192.168.31.116:10888", multiline=False,
-                              font_size="14sp", **_ti)
-        form.add_widget(self.host)
+        host_view = _wrap(Label(
+            text=COOKIECLOUD_HOST, font_size="14sp", halign="left", valign="middle",
+            color=(0.75, 0.85, 1, 1)))
+        form.add_widget(host_view)
 
         form.add_widget(_label("UUID"))
         self.uuid = TextInput(text=cfg.get("uuid", ""), hint_text="CookieCloud UUID",
@@ -141,8 +200,7 @@ class Root(BoxLayout):
         form.add_widget(self.uuid)
 
         form.add_widget(_label("密码"))
-        self.password = TextInput(text=cfg.get("password", ""), hint_text="CookieCloud 密码",
-                                  multiline=False, password=True, font_size="14sp", **_ti)
+        self.password = MaskedPassword(value=cfg.get("password", ""))
         form.add_widget(self.password)
 
         form.add_widget(_label("平台"))
@@ -200,7 +258,7 @@ class Root(BoxLayout):
 
         self._log(f"ytcc-dl v{VERSION} 就绪（{'Android' if IS_ANDROID else '桌面预览'}）")
         self._log(f"保存目录：{APP_DIR}")
-        self._log("首次使用请填 UUID 和密码，点「只测试拉取」验证。")
+        self._log("地址已固定；首次填 UUID，点密码框输入后点「只测试拉取」验证。")
 
     # --- 日志线程安全 ---
     def _log(self, msg):
@@ -211,7 +269,7 @@ class Root(BoxLayout):
 
     def _fields(self):
         return {
-            "host": self.host.text.strip(),
+            "host": COOKIECLOUD_HOST,
             "uuid": self.uuid.text.strip(),
             "password": self.password.text.strip(),
             "platform": self.platform.text,
