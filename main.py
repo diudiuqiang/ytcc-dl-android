@@ -14,6 +14,7 @@ from kivy.app import App
 from kivy.core.text import LabelBase
 from kivy.uix.label import Label as KivyLabel
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
@@ -21,6 +22,7 @@ from kivy.uix.spinner import Spinner
 from kivy.uix.button import Button
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.checkbox import CheckBox
+from kivy.uix.widget import Widget
 from kivy.core.window import Window
 from kivy.clock import Clock
 from kivy.utils import platform
@@ -105,28 +107,40 @@ def _wrap(widget, pad="8dp"):
 COOKIECLOUD_HOST = "http://192.168.31.116:10888"
 
 
-class MaskedPassword(BoxLayout):
+class MaskedPassword(FloatLayout):
     """密码展示/编辑控件：默认星号遮挡只露后两位，点一下切明文编辑，回车/失焦切回。
+
+    ★ v2 修复（真机反馈"点密码框弹填充框、松手就没"）：旧实现用 Button.on_press +
+    remove/add widget 切换，Android 上会触发系统自动填充弹窗且与焦点事件重入打架。
+    新实现把「只读显示框」和「明文输入框」两个 TextInput 始终叠放在界面里，
+    只用 opacity/disabled 切换，绝不 add/remove；显示框用 on_touch_down 主动拦截
+    触摸后切到编辑态并聚焦，不会再弹系统填充框。
 
     明文只存在内存与本地 config.json（自动拉 cookie 必需）；遮挡只作用于界面。
     """
     def __init__(self, value="", **kw):
-        super().__init__(orientation="horizontal", **kw)
+        super().__init__(**kw)
         self._value = value or ""
         self._editing = False
-        self.display = Button(
-            text=self._masked(), font_size="14sp", halign="left", valign="middle")
-        self.display.bind(
-            width=lambda i, w: setattr(i, "text_size", (max(w - 16, 1), i.height)))
-        self.display.bind(on_press=lambda _: self._begin_edit())
+        _box = {"font_size": "14sp", "multiline": False,
+                "size_hint": (1, 1), "pos_hint": {"x": 0, "y": 0},
+                "padding": ["8dp", "8dp", "10dp", "10dp"]}
+
+        # 显示态：只读，展示遮挡串；on_touch_down 主动接管触摸切编辑态
+        self.display = TextInput(text=self._masked(), readonly=True, **_box)
+        self.display.bind(on_touch_down=self._on_display_touch)
         self.add_widget(self.display)
-        self.editor = TextInput(text=self._value, multiline=False, font_size="14sp")
-        self.editor.bind(on_text_validate=lambda _: self._end_edit())
+
+        # 编辑态：明文输入，初始隐藏且禁用；始终在 widget 树里不移除
+        self.editor = TextInput(text=self._value, opacity=0, disabled=True, **_box)
+        self.editor.bind(on_text_validate=self._end_edit)
         self.editor.bind(focus=self._on_focus)
+        self.add_widget(self.editor)
 
     @property
     def text(self):
-        return self._value
+        # 编辑中实时返回输入框内容，非编辑态返回已保存值
+        return self.editor.text if self._editing else self._value
 
     def _masked(self):
         v = self._value
@@ -136,53 +150,79 @@ class MaskedPassword(BoxLayout):
             return "*" * len(v)
         return "*" * (len(v) - 2) + v[-2:]
 
-    def _begin_edit(self):
-        if self._editing:
-            return
+    def _on_display_touch(self, inst, touch):
+        if self._editing or not inst.collide_point(*touch.pos):
+            return False
+        # 拦截显示框的触摸，切到编辑态：显示框隐藏、明文框显示并聚焦全选
         self._editing = True
         self.editor.text = self._value
-        self.remove_widget(self.display)
-        self.add_widget(self.editor)
+        self.display.opacity = 0
+        self.display.disabled = True
+        self.editor.opacity = 1
+        self.editor.disabled = False
         self.editor.focus = True
+        self.editor.select_all()
+        return True  # 消费触摸，避免继续传给下层触发填充框
 
     def _on_focus(self, instance, has_focus):
         if self._editing and not has_focus:
-            # 失焦当下正移除 widget，延迟一帧切回，避免事件重入
+            # 失焦（点了别处）切回遮挡态，延迟一帧避免事件重入
             Clock.schedule_once(lambda _: self._end_edit(), 0)
 
-    def _end_edit(self):
+    def _end_edit(self, *args):
         if not self._editing:
             return
         self._value = self.editor.text.strip()
         self._editing = False
-        self.remove_widget(self.editor)
         self.display.text = self._masked()
-        self.add_widget(self.display)
+        self.editor.opacity = 0
+        self.editor.disabled = True
+        self.editor.focus = False
+        self.display.disabled = False
+        self.display.opacity = 1
 
 
 class Root(BoxLayout):
     def __init__(self, **kw):
-        super().__init__(orientation="vertical", padding="10dp", spacing="7dp", **kw)
+        super().__init__(orientation="vertical", padding=0, spacing=0, **kw)
         cfg = load_cfg()
+
+        # ★ 关键：整个界面套一层 ScrollView。软键盘用 resize 模式弹出时窗口整体
+        # 缩小，用户可上下滚动到任意输入框/按钮；表单固定高度不再随 minimum_height
+        # 抖动，杜绝"输 UUID 时字符和输入框对不上、会跳"。
+        outer = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        page = BoxLayout(orientation="vertical", padding="10dp", spacing="7dp",
+                         size_hint_y=None)
+        page.bind(minimum_height=page.setter("height"))
+        outer.add_widget(page)
+        self._page = page
+        self.add_widget(outer)
+
+        # 顶部状态栏留白：Kivy 在 Android 默认把内容画到状态栏下面，
+        # 标题会被系统时间/信号/电量盖住。加一段透明占位把内容顶下来。
+        if IS_ANDROID:
+            page.add_widget(Widget(size_hint_y=None, height="26dp"))
 
         # 标题：两行分开、左对齐并绑定宽度，避免超宽被裁
         title = _wrap(Label(
             text=f"[b]ytcc-dl 手机版 v{VERSION}[/b]", markup=True,
             font_size="18sp", halign="left", valign="middle",
             size_hint_y=None, height="24dp"))
-        self.add_widget(title)
+        page.add_widget(title)
         sub = _wrap(Label(
             text="国内四站 · CookieCloud 拉 cookie · 局域网",
             font_size="12sp", halign="left", valign="middle",
             color=(0.6, 0.6, 0.6, 1), size_hint_y=None, height="18dp"))
-        self.add_widget(sub)
+        page.add_widget(sub)
 
         # --- CookieCloud 配置 ---
         # 标签固定列宽 76dp + 文字精简，杜绝「CookieCloud 地址」被切成「ookieCloud 地」
         form = GridLayout(cols=2, spacing="6dp", size_hint_y=None,
-                          row_default_height="42dp", row_force_default=True)
+                          row_default_height="46dp", row_force_default=True)
         form.bind(minimum_height=form.setter("height"))
         _ti = {"font_name": "CJK"} if Label.font_name == "CJK" else {}
+        # 输入框垂直居中留白，文字不顶在框上沿（截图里 UUID 顶格的根因）
+        _ti_pad = {"padding": ["8dp", "8dp", "12dp", "12dp"]}
 
         def _label(text):
             return Label(text=text, font_size="14sp", halign="left", valign="middle",
@@ -196,7 +236,7 @@ class Root(BoxLayout):
 
         form.add_widget(_label("UUID"))
         self.uuid = TextInput(text=cfg.get("uuid", ""), hint_text="CookieCloud UUID",
-                              multiline=False, font_size="14sp", **_ti)
+                              multiline=False, font_size="14sp", **_ti, **_ti_pad)
         form.add_widget(self.uuid)
 
         form.add_widget(_label("密码"))
@@ -217,9 +257,9 @@ class Root(BoxLayout):
 
         form.add_widget(_label("链接"))
         self.url = TextInput(hint_text="粘贴 v.douyin.com / b23.tv / t.cn 短链均可",
-                             multiline=False, font_size="14sp", **_ti)
+                             multiline=False, font_size="14sp", **_ti, **_ti_pad)
         form.add_widget(self.url)
-        self.add_widget(form)
+        page.add_widget(form)
 
         # 开关单独一行：CheckBox 固定宽，文字左对齐换行（不再和按钮挤一行）
         opt = BoxLayout(size_hint_y=None, height="28dp", spacing="8dp")
@@ -228,7 +268,7 @@ class Root(BoxLayout):
         opt.add_widget(_wrap(Label(
             text="拉取并使用 cookie（抖音可免 cookie）", font_size="13sp",
             halign="left", valign="middle", size_hint_x=1)))
-        self.add_widget(opt)
+        page.add_widget(opt)
 
         # 两个按钮单独一行，各占一半，size_hint_x 合计=1（原来 1.47 导致重叠）
         btns = BoxLayout(size_hint_y=None, height="46dp", spacing="10dp")
@@ -238,23 +278,22 @@ class Root(BoxLayout):
         self.btn_dl = Button(text="开始下载", font_size="14sp", size_hint_x=0.5)
         self.btn_dl.bind(on_press=lambda _: self.start_download())
         btns.add_widget(self.btn_dl)
-        self.add_widget(btns)
+        page.add_widget(btns)
 
         # 提示行：路径缩短 + 换行（完整路径写进日志，避免横向溢出）
         hint = _wrap(Label(
             text="保存到 Download/ytcc-dl · 抖音已内置签名补丁，可不勾 cookie 直接下。",
             font_size="11sp", halign="left", valign="top",
             color=(0.6, 0.6, 0.6, 1), size_hint_y=None, height="30dp"))
-        self.add_widget(hint)
+        page.add_widget(hint)
 
-        # 日志
+        # 日志：固定高度（不再 size_hint=1 抢占剩余空间），放外层 ScrollView 内
         self.log_view = TextInput(readonly=True, multiline=True, font_size="13sp",
                                   font_name="CJK" if Label.font_name == "CJK" else "Roboto",
                                   background_color=(0.08, 0.08, 0.1, 1),
-                                  foreground_color=(0.85, 0.9, 0.85, 1))
-        scroll = ScrollView(size_hint=(1, 1))
-        scroll.add_widget(self.log_view)
-        self.add_widget(scroll)
+                                  foreground_color=(0.85, 0.9, 0.85, 1),
+                                  size_hint_y=None, height="170dp")
+        page.add_widget(self.log_view)
 
         self._log(f"ytcc-dl v{VERSION} 就绪（{'Android' if IS_ANDROID else '桌面预览'}）")
         self._log(f"保存目录：{APP_DIR}")
@@ -367,7 +406,9 @@ class YtccApp(App):
     title = "ytcc-dl 手机版"
 
     def build(self):
-        Window.softinput_mode = "below_target"
+        # resize：软键盘弹出时缩小窗口而不是平移，配合外层 ScrollView 让内容
+        # 可滚动，输入框位置稳定不再跳动（below_target 在部分机型会反复平移抖动）
+        Window.softinput_mode = "resize"
         return Root()
 
 
