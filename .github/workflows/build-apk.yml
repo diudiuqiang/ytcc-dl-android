@@ -1,0 +1,52 @@
+name: Build ytcc-dl Android APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    name: Build APK with Buildozer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        id: buildozer
+        with:
+          workdir: .
+          buildozer_version: stable
+          command: python3 pre_buildozer.py; buildozer android debug
+
+      - name: Rename APK with version
+        run: |
+          APK="${{ steps.buildozer.outputs.filename }}"
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            APK=$(find bin -name "*.apk" | head -1)
+          fi
+          echo "built: $APK"
+          cp "$APK" "bin/ytcc-dl-android-v1.0.0.apk"
+          ls -lh bin/*.apk
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytcc-dl-android-apk
+          path: bin/*.apk
+          retention-days: 90
+
+      - name: Publish to fixed Release (兜底：自动创建/更新 ytcc-android-latest)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=ytcc-android-latest
+          APK="bin/ytcc-dl-android-v1.0.0.apk"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "ytcc-dl 手机版 (Android)" \
+              --notes "国内四站视频下载 APK，从 CookieCloud 拉 cookie。每次打 v* tag 自动重建。apk 直接点下方资产下载到手机安装。"
+          gh release upload "$TAG" "$APK" --clobber
